@@ -1,0 +1,39 @@
+
+# experiment
+exp_name = cfg_name
+
+# data
+use_normals_input
+bb_supervision
+data_dir = ./data/ARKitScenes/
+dataset_name = arkitscenes
+
+# model
+do_segment_pooling
+network_heads = [mlp_offsets, mlp_bounds, mlp_bb_scores, mlp_semantics]
+
+point_association = False
+
+# eval
+eval_ths = [0.5, 0.05, 0.4, 0.6]
+eval_every = 10000000000
+ckpt_every = 2
+
+#training settings
+batch_size = 4
+voxel_size = 0.04
+subsample_rate = 2
+lr = 0.001
+loss_weight_bb_bounds = 0.5
+loss_weight_bb_scores = 3
+loss_weight_semantics = 0.3
+mlp_bb_scores_start_epoch = 100
+
+# augmentations - no elastic distortion for now
+augmentation
+rotation_aug=[1.0, 0.0, 0.9]
+scaling_aug = [1.0, 0.8, 1.2]
+# flipping_aug = 0.5
+# position_jittering = [0.2, 0.005]
+# flipping_aug = 0.5
+# rotation_90_aug

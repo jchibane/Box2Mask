@@ -1,0 +1,10 @@
+__pycache__
+.idea
+*.pyc
+!.gitkeep
+.ipynb_checkpoints
+trash
+.ipynb_checkpoints
+experiments
+analysis
+visualize

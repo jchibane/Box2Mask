@@ -1,0 +1,39 @@
+# experiment
+exp_name = cfg_name
+
+# data
+align
+use_normals_input
+bb_supervision
+smallest_bb_heuristic
+
+# model
+do_segment_pooling
+network_heads = [mlp_offsets, mlp_bounds, mlp_bb_scores, mlp_semantics]
+
+# eval - those are temporarily
+eval_ths = [0.5, 0.05, 0.3, 0.6]
+
+#training settings
+batch_size = 8
+lr = 0.001
+loss_weight_bb_bounds = 0.5
+loss_weight_bb_scores = 1
+loss_weight_semantics = 1
+mlp_bb_scores_start_epoch = 100
+ckpt_every = 20
+eval_every = 20
+val_every = 5
+## LR scheduler
+use_lr_scheduler
+lr_scheduler_start_epoch = 650
+lr_scheduler_end_epoch = 1650
+## robustness
+dropout_boxes = 0.20
+
+# augmentations
+augmentation
+scaling_aug = [1.0, 0.8, 1.2]
+flipping_aug = 0.5
+rotation_90_aug
+apply_hue_aug
