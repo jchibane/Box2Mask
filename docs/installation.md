@@ -57,7 +57,7 @@ python -m examples.indoor
 ## Install GIT repository and other dependencies
 The following commands will clone Box2Mask repo on your machine and install the remaining dependencies. Note that you should still be using `box2mask` environemnt
 ```
-git clone -b release https://github.com/jchibane/impseg.git box2mask
+git clone -b release https://github.com/jchibane/Box2Mask.git box2mask
 cd box2mask
 conda env update --file env.yml
 ```
