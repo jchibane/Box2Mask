@@ -22,7 +22,9 @@ Follow the instructions [here](docs/installation.md) to setup the environment
 
 ## Data Setup
 
-**Scannet**: Download the [Scannet](http://www.scan-net.org/) dataset and uncompress the data to  `data/scannet/`. Each scene is stored with the name of format `scene%04d_%02d` (see [Scannet](https://raw.githubusercontent.com/ScanNet/ScanNet/master/README.md)). The data should be organized as follow for our project. 
+**Scannet**: Download the [Scannet](http://www.scan-net.org/) dataset and uncompress the data to  `data/scannet/`.
+Each scene is stored with the name of format `scene%04d_%02d` (see [Scannet](https://raw.githubusercontent.com/ScanNet/ScanNet/master/README.md)).
+The data should be organized as follows for our project. 
 ```
 box2mask/data/scannet/3dod/
 └── scans/
@@ -39,7 +41,8 @@ box2mask/data/scannet/3dod/
 
 ## Quick Start with Pretrained Model
 
-We provide a pretrained checkpoint for a quick start with the method. First, from the folder where you clone project, run the following command to download the pretrained checkpoint:
+We provide a pretrained checkpoint for a quick start with the method.
+First, from the folder where you clone the project, run the following command to download the pretrained checkpoint:
 ```bash
 cd box2mask # Navigate to the root folder
 mkdir -p experiments/scannet/checkpoints/
@@ -68,13 +71,15 @@ Start to train a model with a specific configuration file using:
 ```bash
 python models/training.py --config configs/scannet.txt
 ```
-The command above will train the Scannet dataset, you can use a different config file to train a different dataset, eg. to train the Arkitscenes dataset use `configs/arkitscenes.txt` or to train with the S3DIS dataset with area 1 as the validation set use `config/s3dis_fold1` (need to setup these datas first)
-> Note: The above configuration uses a batch of 8 scenes per patch, which assumes a ~48GB GPU. 
-> RAM usage can be used with smaller batch size setting `--batch_size`
+The command above will train with the Scannet dataset.
+You can use a different config file to train with a different dataset.
+To train with the Arkitscenes dataset use `configs/arkitscenes.txt` or to train with the S3DIS dataset with area 1 as the validation set use `config/s3dis_fold1` (the data needs to be setup first, see Sec. 'Data Setup')
+> Note: The above configuration uses a batch of 8 scenes, which assumes ~48GB GPURAM. 
+> RAM usage can be decreased via a smaller batch size, see parameter `--batch_size`.
 
 ## Prediction and visualization
 
-The folloing command makes a prediction for the validation set and compute the validation score (reproducing the results from table 1 in our paper).
+The following command makes a prediction for the validation set and computes the validation score (reproducing the results from table 1 in our paper).
 ```bash
 python models/evaluation.py --config configs/scannet.txt --fixed_seed 10
 ```
@@ -86,26 +91,29 @@ cd ./experiments/scannet/results/[checkpoint]
 python -m http.server 6008
 ```
 Follow the on-screen instructions to find the visualizations in your browser.
-## Making a prediction for test set
 
 
-> Note that the oversegmentations of scene are needed for our project. Oversegmentations are already included for the train and validation scenes. 
-> For test scenes, see the [instruction](dataprocessing/oversegmentation/README.md) to compile the oversegmentation program.
+## Prediction on the ScanNet test set
+The oversegmentations of scannet test scenes are needed for our project. Oversegmentations are already included for the train and validation scenes. 
+For test scenes, see the [instruction](dataprocessing/oversegmentation/README.md) to compile the oversegmentation program.
 
 Next, the following script will produce the oversegmentations for test scenes. The oversegmentations results will be stored at `./data/scannet/scans_test_segmented`
 ```bash
 mkdirs -p ./data/scannet/scans_test_segmented
-cd data/dataprocessing/oversegmentation/
+cd dataprocessing/oversegmentation/
 python run_segmentator.py
 ```
 
-Then, to produce interactive visualization file for validation set, run the following line
+To run the ScanNet evaluation on the test set, we need to add the parameter `--submission_write_out_testset`.
+Without this parameter the validation set is evaluated as seen in the previous section.
 ```bash
 python models/evaluation.py --config configs/scannet.txt --submission_write_out_testset --fixed_seed 100
 ```
 
 Resulting predictions files will be stored in `./experiments/scannet/results/[checkpoint]`.
-Option `--submission_write_out_testset` is only available for scannet data. will write the segmentation result in Scannet submission format ([see documentation](https://kaldir.vc.in.tum.de/scannet_benchmark/documentation)). `--fixed_seed` specifies a seed for test time agumentation.
+Our results are formatted into Scannet submission format ([see documentation](https://kaldir.vc.in.tum.de/scannet_benchmark/documentation)). 
+`--fixed_seed` specifies a seed for test time augmentation.
+Results can be visualized interactively, in the same fashion as shown in the previous section.
 ## Augmented Data
 
 This [instruction](data/augmented_BBs/README.md) shows how to reproduce the augmented bounding box labels experiments and how to get the data.
