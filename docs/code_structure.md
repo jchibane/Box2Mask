@@ -9,7 +9,8 @@
 **dataprocessing**
   - **dataprocessing/augmentation.py**, Defines augmentation code
   - **dataprocessing/scannet.py**, Reads on train/test/val scenes of scannet
-  - **dataprocessing/arkitscenes.py**, Reads on train/test/val scenes of Arkitscenes
+  - **dataprocessing/arkitscenes.py**, Reads on train/val scenes of Arkitscenes
+  - **dataprocessing/s3dis.py**, Reads on train/val scenes of S3DIS
 
 
 **models**
@@ -20,6 +21,9 @@
     - **class ARKitScenes**, Reads and preprocess ArkitScenes scenes
         - **approx_association()**, Finds the associations of points using GT bounding boxes 
         - **__getitem__()**, Preprocesses the scenes, returns model inputs and labels
+    - **class S3DIS**, Reads and preprocess S3dis scenes
+      - **approx_association()**, Finds the associations of points using GT bounding boxes 
+      - **__getitem__()**, Preprocesses the scenes, returns model inputs and labels
     - **collate_fn**, Collates preprocessed scenes into tensor batches
 
   - **models/detection_net.py**, Defines the network

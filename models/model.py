@@ -208,6 +208,19 @@ class Model:
             losses_dict['semantics_loss'] = semantics_loss.detach().cpu().numpy()
             losses_dict['semantics_acc'] = semantics_acc.detach().cpu().numpy()
             losses_dict['semantics_mIoU'] = semantics_miou
+        
+        if self.cfg.mlp_per_vox_semantics in self.cfg.network_heads:
+            pred_semantics = pred[cfg.mlp_per_vox_semantics]
+            gt_semantics = batch['gt_per_vox_semantics']
+            gt_semantics = self.semantic_id2idx[gt_semantics].to('cuda')
+
+            per_vox_semantics_loss = self.semantics_loss(pred_semantics, gt_semantics)
+            pred_semantics_int = torch.argmax(pred_semantics, 1)
+            per_vox_semantics_acc = torch.sum(pred_semantics_int == gt_semantics) / len(gt_semantics)
+
+            losses_dict['optimization_loss'] += self.cfg.loss_weight_per_vox_semantics * per_vox_semantics_loss
+            losses_dict['per_vox_semantics_loss'] = per_vox_semantics_loss.detach().cpu().numpy()
+            losses_dict['per_vox_semantics_acc'] = per_vox_semantics_acc.detach().cpu().numpy()
 
         return losses_dict, pred
 
@@ -273,19 +286,3 @@ class Model:
         epoch = checkpoint['epoch']
         training_time = checkpoint['training_time']
         return epoch, training_time, os.path.basename(path)[:-4], checkpoint['iteration_num']
-
-
-if __name__ == '__main__':
-    from models.dataloader import ScanNet
-    import config_loader as cfg_loader
-
-    device = torch.device('cuda')
-    cfg = cfg_loader.get_config(['--config', 'configs/WKS.txt'])
-
-    val_dataset = ScanNet('val', cfg)
-    train_dataset = ScanNet('train', cfg)
-    train_dataloader = train_dataset.get_loader()
-    batch = next(iter(train_dataloader))
-
-    model = Model(cfg)
-    model.detection_model.load_checkpoint()

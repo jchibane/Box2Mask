@@ -139,7 +139,6 @@ ARKITSCENES_SEMANTIC_ID2IDX = torch.zeros(41).fill_(-100).long()
 # Needed to map semantic ids to ones valid for scene segmentation (= valid classes W wall, ceiling, floor)
 ARKITSCENES_SEMANTIC_ID2IDX[ARKITSCENES_SEMANTIC_VALID_CLASS_IDS] = torch.arange(len(ARKITSCENES_SEMANTIC_VALID_CLASS_IDS)).long()
 
-# USED FOR REFINEMENT NETWORK
 ARKITSCENES_INSTANCE_VALID_CLASS_IDS = np.array([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 28, 33, 34, 36, 39])  # len = 18
 ARKITSCENES_INSTANCE_VALID_CLASS_IDS_torch = torch.Tensor(ARKITSCENES_INSTANCE_VALID_CLASS_IDS).long()
 ARKITSCENES_INSTANCE_ID2IDX = torch.zeros(41).fill_(-100).long()

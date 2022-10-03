@@ -33,6 +33,10 @@ box2mask/data/scannet/3dod/
 ```
 
 **Arkit**: See [Arkitscenes instruction](docs/arkitscenes.md).
+
+**S3DIS**: See [S3DIS instruction](docs/s3dis.md).
+
+
 ## Quick Start with Pretrained Model
 
 We provide a pretrained checkpoint for a quick start with the method. First, from the folder where you clone project, run the following command to download the pretrained checkpoint:
@@ -64,17 +68,17 @@ Start to train a model with a specific configuration file using:
 ```bash
 python models/training.py --config configs/scannet.txt
 ```
-The command above will train the Scannet dataset, you can use a different config file to train a different dataset, eg. to train the Arkitscenes dataset use `configs/arkitscenes.txt` (need to setup the data first)
+The command above will train the Scannet dataset, you can use a different config file to train a different dataset, eg. to train the Arkitscenes dataset use `configs/arkitscenes.txt` or to train with the S3DIS dataset with area 1 as the validation set use `config/s3dis_fold1` (need to setup these datas first)
 > Note: The above configuration uses a batch of 8 scenes per patch, which assumes a ~48GB GPU. 
 > RAM usage can be used with smaller batch size setting `--batch_size`
 
 ## Prediction and visualization
 
-The folloing command make a prediction for the validation set, output the validation score to console
+The folloing command makes a prediction for the validation set and compute the validation score (reproducing the results from table 1 in our paper).
 ```bash
 python models/evaluation.py --config configs/scannet.txt --fixed_seed 10
 ```
-To visualize the prediction for the validation set, add option `--produce_visualizations [scene_name]` to the above command, where `[scene_name]` is the name of the scene (eg. `scene0293_00` in Scannet or `6667847` in Arkitscenes).
+To visualize the prediction for the validation set, add option `--produce_visualizations [scene_name]` to the above command, where `[scene_name]` is the name of the scene (eg. `scene0293_00` in Scannet or `6667847` in Arkitscenes or `Area_5.office_13` in S3DIS).
 The visualization files will be stored in `./experiments/[config_name]/results/[checkpoint]/viz/` where  `[checkpoint]` is the name of the checkpoint used for prediction and `[config_name]` is the name of the config (`scannet` in this example).
 The interactive visualization server can be started using the command bellow.
 ```bash
@@ -108,7 +112,11 @@ This [instruction](data/augmented_BBs/README.md) shows how to reproduce the augm
 
 ## Arkitscenes Data
 
-See [instruction](docs/arkitscenes.md) to reproduce the result for arkitscenes.
+See [instruction](docs/arkitscenes.md) to reproduce the results of arkitscenes.
+
+## S3DIS Data
+
+See [instruction](docs/s3dis.md) to reproduce the results of S3DIS.
 
 ## Code structure
 

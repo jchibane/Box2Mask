@@ -1,0 +1,47 @@
+# experiment
+exp_name = cfg_name
+data_dir = ./data/s3dis/
+
+# input settings
+use_normals_input
+
+# model
+do_segment_pooling
+network_heads = [mlp_offsets, mlp_bounds, mlp_bb_scores, mlp_per_vox_semantics]
+
+# eval
+eval_ths = [0.3, 0.03, 0.2, 0.6]
+#checkpoint = checkpoint_134h:41m:14s_484874.59536361694
+# checkpoint = checkpoint_206h:12m:53s_742373.8897235394 #0.673
+# checkpoint = checkpoint_192h:58m:47s_694727.7309098244 #0.683
+# checkpoint = checkpoint_190h:9m:7s_684547.2124330997 # 0.687
+# checkpoint = checkpoint_189h:14m:11s_681251.3121433258 # 0.689
+# checkpoint = checkpoint_191h:6m:14s_687974.8505253792 #0.676
+# checkpoint = checkpoint_186h:29m:40s_671380.9550452232 # 0.667
+# checkpoint = checkpoint_188h:20m:22s_678022.2635447979
+# checkpoint = checkpoint_192h:58m:47s_694727.7309098244
+checkpoint = checkpoint_195h:35m:19s_704119.6752953529 
+# 0.693
+
+#training settings
+batch_size = 4
+num_workers = 8
+lr = 0.001
+loss_weight_bb_bounds = 0.5
+loss_weight_bb_scores = 3
+mlp_bb_scores_start_epoch = 100
+
+
+# augmentations
+augmentation
+scaling_aug= [1.0, 0.8, 1.2]
+rotation_aug=1.0
+
+# dataset settings
+dataset_name s3dis
+s3dis_split_fold 5
+point_sampling_rate 0.25
+ignore_wall_ceiling_floor
+superpoint_algo learned_superpoint
+
+load_unused_head

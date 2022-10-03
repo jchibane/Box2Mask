@@ -22,6 +22,7 @@ import torch.distributed as dist
 import config_loader as cfg_loader
 from models.dataloader import ScanNet
 from models.dataloader import ARKitScenes
+from models.dataloader import S3DIS
 
 class Trainer(object):
     # set val_dataset to None if no validation should be performed
@@ -107,7 +108,7 @@ class Trainer(object):
                         print(f'Done saving checkpoint ({str(time.time() - save_time)[:5]} s)')
 
 
-                    val_losses = self.compute_val_loss()
+                    val_losses = self.compute_val_loss(self.cfg.num_eval_batches)
                     print("VAL losses: {} ".format(val_losses))
                     # self.writer.add_scalars('Losses/val', val_losses, iteration_num)
                     for k, v in val_losses.items():
@@ -319,6 +320,14 @@ if __name__ == '__main__':
         semantic_id2idx = arkitscenes.ARKITSCENES_SEMANTIC_ID2IDX
         instance_id2idx = arkitscenes.ARKITSCENES_INSTANCE_ID2IDX
         is_foreground = arkitscenes.is_foreground
+    elif cfg.dataset_name == 's3dis':
+        import dataprocessing.s3dis as s3dis
+        val_dataset = S3DIS('val', cfg)
+        train_dataset = S3DIS('train', cfg)
+        semantic_valid_class_ids_torch = s3dis.S3DIS_SEMANTIC_VALID_CLASS_IDS_torch
+        semantic_id2idx = s3dis.S3DIS_SEMANTIC_ID2IDX
+        instance_id2idx = s3dis.S3DIS_INSTANCE_ID2IDX
+        is_foreground = s3dis.is_foreground
 
     if cfg.fixed_seed:
         print('WARNING: fixed seed selected for training.')

@@ -1,4 +1,4 @@
-The following instruction is for reproducing the experiments in Table. 7 in our paper. 
+The following instruction is for reproducing the experiments in Table. 2 in our paper. 
 
 Follow the original ARKitScenes [instruction](https://github.com/apple/ARKitScenes/blob/main/DATA.md) to download the data (3dod dataset). 
 The oversegmentation for ARKitScenes can be download here: [train](https://datasets.d2.mpi-inf.mpg.de/box2mask/segmented_train_clean.tar.gz) and [valid](https://datasets.d2.mpi-inf.mpg.de/box2mask/segmented_val_clean.tar.gz).
@@ -50,4 +50,4 @@ You can also produce visualization by adding option `--produce_visualizations`. 
 python models/evaluation.py --config configs/arkitscenes.txt --predict_specific_scene 42445429 --produce_visualizations
 ```
 
-Running the command above will produce the visualization of segmentation result in `experiments/deb/results/[checkpoint]/viz/42445429` where `checkpoint` is the loaded checkpoint when running the script.
+Running the command above will produce the visualization of segmentation result in `experiments/arkitscenes/results/[checkpoint]/viz/42445429` where `checkpoint` is the loaded checkpoint when running the script.

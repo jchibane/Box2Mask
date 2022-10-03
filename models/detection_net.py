@@ -194,6 +194,7 @@ class SelectionNet(ResNetBase):
             )
 
         self.network_heads = {}
+        self.requires_voxel_outputs = False
         for network_head in self.cfg.network_heads:
             if network_head == self.cfg.mlp_offsets:
                 self.mlp_offsets = mlp_head(3)
@@ -214,9 +215,15 @@ class SelectionNet(ResNetBase):
 
 
             if network_head == self.cfg.mlp_semantics:
-                # Predict valid classes
+                # Predict valid classes for each super point
                 self.mlp_semantics = mlp_head(len(self.semantic_valid_class_ids))
                 self.network_heads[network_head] = self.mlp_semantics
+
+            if network_head == self.cfg.mlp_per_vox_semantics:
+                # Predict valid classes for each voxel
+                self.mlp_per_vox_semantics = mlp_head (len(self.semantic_valid_class_ids))
+                self.network_heads[network_head] = self.mlp_per_vox_semantics
+                self.requires_voxel_outputs = True
 
 
         self.global_avg_pool = ME.MinkowskiGlobalAvgPooling()
@@ -332,6 +339,9 @@ class SelectionNet(ResNetBase):
 
         outputs = {}
 
+        if self.requires_voxel_outputs:
+            outputs['vox_feats'] = out
+
         if self.cfg.do_segment_pooling:
             assert pooling_ids is not None
             out.C[:,0] = pooling_ids
@@ -343,7 +353,10 @@ class SelectionNet(ResNetBase):
 
 
         for network_head in self.cfg.network_heads:
-            outputs[network_head] = self.network_heads[network_head](out)
+            if self.requires_voxel_outputs and 'per_vox' in network_head:
+                outputs[network_head] = self.network_heads[network_head](outputs['vox_feats'])
+            else:      
+                outputs[network_head] = self.network_heads[network_head](out)
 
             if self.cfg.mlp_bounds_relu and network_head == self.cfg.mlp_bounds:
                 outputs[network_head] = self.relu(outputs[network_head])
@@ -360,24 +373,46 @@ class SelectionNet(ResNetBase):
         pred_bbs = to_bbs_min_max(batch['input_location'].to('cuda' if pred['mlp_offsets'].is_cuda else 'cpu'),
                                   pred['mlp_offsets'], pred['mlp_bounds'],
                                   torch.nn.Sigmoid()(pred['mlp_bb_scores']))
+        
 
-        pred_semantics = pred[cfg.mlp_semantics]
-        # get pred index
-        pred_semantics = torch.argmax(pred_semantics, 1)
-        # convert index to scannet id
-        pred_semantics = self.semantic_valid_class_ids[pred_semantics].long()
+        if cfg.mlp_per_vox_semantics in cfg.network_heads:
+            # predict semantic per voxel
+            pred_semantics = pred[cfg.mlp_per_vox_semantics]
+            pred_semantics = torch.argmax(pred_semantics, 1)
+        else:
+            pred_semantics = pred[cfg.mlp_semantics]
+            # get pred index
+            pred_semantics = torch.argmax(pred_semantics, 1)
+            # convert index to scannet id
+            pred_semantics = self.semantic_valid_class_ids[pred_semantics].long()
 
         results = {}
         for scene_idx, scene in enumerate(batch['scene']):
 
             # get predictions that belong to the current scene
             scene_mask = batch['batch_ids'] == scene_idx
-
-            scene_pred_semantics = pred_semantics[scene_mask]
+            
+            if not self.requires_voxel_outputs:
+                scene_pred_semantics = pred_semantics[scene_mask]
+            else:
+                scene_pred_semantics = pred_semantics
+                if cfg.do_segment_pooling:
+                    # Use majoring vote for each segment
+                    segments = batch ["vox_segments"][scene_idx]
+                    unique_segments = np.unique (segments)
+                    segment_semantics = np.zeros(len(unique_segments), dtype='int32')
+                    for i, seg_id in enumerate(unique_segments):
+                        seg_mask = seg_id == segments
+                        # find most frequent semantic label within predicted instance
+                        most_freq_label = torch.mode (pred_semantics[seg_mask])[0].numpy ()
+                        segment_semantics[i] = most_freq_label
+                    scene_pred_semantics_per_segment = segment_semantics # change of variable name for clarity
         
             # predicted foreground
-            # scene_pred_fg = (scene_pred_semantics > 2) & (scene_pred_semantics != 22)
-            scene_pred_fg = self.is_foreground (scene_pred_semantics)
+            if not self.requires_voxel_outputs:
+                scene_pred_fg = self.is_foreground (scene_pred_semantics)
+            else:
+                scene_pred_fg = self.is_foreground (scene_pred_semantics_per_segment)
             scene_pred_bbs = pred_bbs.to('cpu')[scene_mask][scene_pred_fg]
 
             # ---------- Compute instance clusters ---------------
@@ -404,10 +439,17 @@ class SelectionNet(ResNetBase):
                 pred_heatmaps_w_bg[:, scene_pred_fg] = cluster_heatmaps
                 seg2vox = batch['seg2vox'][scene_idx]
                 cluster_heatmaps = pred_heatmaps_w_bg[:, seg2vox] # num_voxels
-                scene_pred_semantics = scene_pred_semantics[seg2vox]
+                if not self.requires_voxel_outputs:
+                    # Get per-voxel predictions
+                    scene_pred_semantics = scene_pred_semantics[seg2vox]
 
             pred_masks = cluster_heatmaps > mask_bin_th
-            mask_filter, _ = mask_NMS(pred_masks, mask_nms_th)
+            if not self.requires_voxel_outputs:
+                mask_filter, _ = mask_NMS(pred_masks, mask_nms_th)
+            else:
+                # Not filtering when making prediction at voxel level
+                mask_filter = np.ones ((len(scores)), dtype=np.bool)
+
             pred_masks = pred_masks[mask_filter]
             bb_scores = scores[mask_filter]
             scene_pred_bbs = scene_pred_bbs[mask_filter]
@@ -443,7 +485,6 @@ class SelectionNet(ResNetBase):
                                         'bbs': scene_pred_bbs,
                                         'pred_fg': scene_pred_fg
                                         }
-
         return results
 
 
@@ -457,6 +498,7 @@ class SelectionNet(ResNetBase):
                 # transform data to voxelized sparse tensors
                 sin = ME.SparseTensor(batch['vox_features'], batch['vox_coords'], device=device)
                 pred = self(sin, batch['pooling_ids'].to(device))
+                
         else:
             sin = ME.SparseTensor(batch['vox_features'], batch['vox_coords'], device=device)
             pred = self(sin, batch['pooling_ids'].to(device))

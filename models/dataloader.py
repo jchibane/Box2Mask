@@ -11,6 +11,7 @@ import copy
 
 import dataprocessing.scannet as scannet
 import dataprocessing.arkitscenes as arkitscenes
+import dataprocessing.s3dis as s3dis
 import MinkowskiEngine as ME
 import pickle as pkl
 from sklearn.neighbors import NearestNeighbors
@@ -637,6 +638,311 @@ class ARKitScenes(Dataset):
             torch.random.manual_seed(base_seed + worker_id)
             torch.cuda.manual_seed(base_seed + worker_id)
 
+class S3DIS(Dataset):
+
+    def __init__(self, mode, cfg, do_augmentations=True):
+
+        self.do_augmentations = do_augmentations
+        self.mode = mode
+        self.cfg = cfg
+
+        self.data_class = s3dis
+        self.data_list = s3dis.get_scene_names (mode, cfg)
+
+        # for testing purposes: over-fit a model to a single scene, via an integer index
+        if cfg.overfit_to_single_scene is not None:
+            self.data_list = [self.data_list[cfg.overfit_to_single_scene]] * 100
+
+        # for testing purposes: over-fit a model to a single scene, via a scene name string
+        if cfg.overfit_to_single_scene_str is not None:
+            self.data_list = [cfg.overfit_to_single_scene_str,] * 100
+
+        if mode == 'predict_specific_scene':
+            self.data_list = [cfg.predict_specific_scene,]
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, idx):
+        # will store all return data of this method
+        ret = {}
+        scene_name = self.data_list[idx]
+
+        scene, labels = self.data_class.process_scene(scene_name, self.mode, self.cfg, do_augmentations=self.do_augmentations)
+
+        #---------------- Voxelization Code (START) ----------------- #
+        # Translate scene to avoid negative coords
+        input_coords = scene["positions"] - min(0, np.min(scene["positions"]))
+        # Scale to voxel size
+        input_coords = input_coords / self.cfg.voxel_size
+        # from here on our voxels coordinates represent the center location of the space they discretize
+        vox_coords = np.round(input_coords)  # (num_scene_points, 3)
+        ret['vox_coords'], vox2point = np.unique(vox_coords, axis=0, return_inverse=True)  # (num_voxels, 3), (num_points)
+        
+        nbrs = NearestNeighbors(n_neighbors=1, algorithm='ball_tree').fit(input_coords)
+        point2vox = nbrs.kneighbors(ret['vox_coords'], return_distance=False)
+        point2vox = point2vox.reshape(-1)  # (num_voxels)
+        # point2vox maps an array organized as scene points to an array organized as vox_coords: num_points->num_voxels
+        # ---------------- Voxelization Code (END) ----------------- #
+
+        #---------------- INPUT FEATURES ----------------- #
+        input_feats = [scene["colors"]]
+
+        if self.cfg.use_normals_input:
+            input_normals = scene["normals"]
+            input_feats.append(input_normals)
+
+        input_feats = np.concatenate(input_feats, 1)
+        # Voxelize the input to the network (scene)
+        ret['vox_segments'] = scene['segments'][point2vox]  # (num_voxels)
+        ret['vox_features'] = input_feats[point2vox]  # (num_voxels, feature_dim)
+        ret['scene'] = scene
+
+        ret['vox_world_coords'] = ret['vox_coords'] * self.cfg.voxel_size + min(0, np.min(scene["positions"]))
+        ret['vox2point'] = vox2point
+        ret['point2vox'] = point2vox
+
+        unique_vox_segments = None # initialization
+        if not self.cfg.do_segment_pooling:
+            # compute position of each voxel in original world space of the scene
+            ret['input_location'] = ret['vox_world_coords']
+            ret['pred2point'] = vox2point
+        else:
+            # compute mean position of each segment in original world space of the scene
+
+            # define GT per segment
+            unique_vox_segments, seg2vox = np.unique(ret['vox_segments'], return_inverse = True) # (unique_vox_segments), (num_voxels)
+            seg2point = seg2vox[vox2point]
+
+            segment_middle = np.zeros((unique_vox_segments.shape[0], 3))
+            segment_middle.fill(np.nan)
+            for i, segment in enumerate(unique_vox_segments):
+                segment_coords = ret['vox_world_coords'][segment == ret['vox_segments']]
+                segment_middle[i] = np.mean(segment_coords, axis=0)
+            assert ~ np.any(np.isnan(segment_middle))
+
+            ret['input_location'] = segment_middle
+            ret['seg2point'] = seg2point
+            ret['seg2vox'] = seg2vox
+            ret['pred2point'] = seg2point
+
+        ret['labels'] = labels        
+        
+        if self.cfg.bb_supervision and self.mode=='train':
+            if unique_vox_segments is None and not self.cfg.point_association:
+                unique_vox_segments = np.unique(ret['vox_segments'])  # (unique_vox_segments), (num_voxels)
+            self.bbs_supervision(ret, labels, scene, point2vox, unique_vox_segments)
+        else:
+            self.mask_supervision(ret, labels, point2vox, unique_vox_segments)
+
+        return ret
+
+    def mask_supervision(self, ret, labels, point2vox, unique_vox_segments):
+        ret['vox_instances'] = labels['seg2inst'][ret['vox_segments']]
+        if not self.cfg.do_segment_pooling:
+            ret['gt_semantics'] = labels['semantics'][point2vox]  # (num_voxels)
+            ret['gt_bb_bounds'] = labels['bb_bounds'][point2vox]  # (num_voxels, 3)
+            gt_bb_centers = labels['bb_centers'][point2vox]  # (num_voxels, 3)
+            # compute per voxel center offset in world coordinates
+            ret['instance_ids'] = ret['vox_instances']
+        else:
+            segments_instances = labels['seg2inst'][unique_vox_segments]
+            ret['gt_bb_bounds'] = labels['per_instance_bb_bounds'][segments_instances]
+            ret['gt_semantics'] = labels['per_instance_semantics'][segments_instances]
+            gt_bb_centers = labels['per_instance_bb_centers'][segments_instances]
+
+            ret['gt_per_vox_semantics'] = labels['semantics'][point2vox]
+
+            # for computing gt masks in refinement part
+            ret['instance_ids'] = segments_instances
+
+        ret['gt_bb_offsets'] = gt_bb_centers - ret['input_location']
+        ret['fg_instances'] = self.data_class.semantics_to_forground_mask (ret ['gt_semantics'], self.cfg)
+
+    def bbs_supervision(self, ret, labels, scene, point2vox, unique_segs):
+        if not self.cfg.do_segment_pooling:
+            inst_per_point, sem_per_point = self.approx_association(labels, scene, self.cfg.point_association, unique_segs)
+            instances = inst_per_point[point2vox] # voxelize
+            gt_full_sem = labels['semantics'][point2vox] # full supervision semantics
+        else:
+            inst_per_point, sem_per_point, inst_per_seg, sem_per_seg = self.approx_association(labels, scene, self.cfg.point_association, unique_segs)
+
+            instances = inst_per_seg
+            segments_instances = labels['seg2inst'][unique_segs]
+            gt_full_sem = labels['per_instance_semantics'][segments_instances] # full supervision semantics 
+
+        fg_instances = self.data_class.semantics_to_forground_mask (sem_per_seg, self.cfg) # Mask of num_voxels / num_segments
+        bg_instances = (~fg_instances) & (instances != -2)
+        ret['fg_instances'] = fg_instances
+
+        # ------------------ GT INSTANCES BBs
+        gt_bb_bounds = np.zeros((len(fg_instances), 3))
+        gt_bb_bounds[fg_instances] = labels['per_instance_bb_bounds'][instances[fg_instances]]
+        ret['gt_bb_bounds'] = gt_bb_bounds
+
+        gt_bb_centers = np.zeros((len(fg_instances), 3))
+        gt_bb_centers[fg_instances] = labels['per_instance_bb_centers'][instances[fg_instances]]
+        if (len (ret['input_location']) != len (fg_instances)):
+            print ("size mismatching error??")
+            print (scene ["name"])
+            print (scene['segments'].shape)
+            print (ret['input_location'].shape, fg_instances.shape, gt_bb_centers.shape)
+            assert False, "mismatch size error happen"
+
+        ret['gt_bb_offsets'] = gt_bb_centers - (ret['input_location'] * fg_instances[:,None] + 0)
+
+        # ------------------ GT SEMANTICS
+        # -100 label is corresponds to 'unlabeled' and is ignored in loss computation
+        gt_semantics = np.ones(len(fg_instances), dtype=np.int) * -100
+        # we use semantics of instances only where we have instances
+        gt_semantics[fg_instances] = labels['per_instance_semantics'][instances[fg_instances]]
+        gt_semantics[bg_instances] = labels['per_instance_semantics'][instances[bg_instances]]
+        # for the "-1" (pseudo) background class, we predict, "2" (floor label in original ScanNet)
+
+        ret['gt_per_vox_semantics'] = sem_per_point[point2vox]
+        ret['gt_semantics'] = gt_semantics
+    
+    def approx_association(self,labels, scene, point_association, unique_segs):
+        # ---------------- FIND APPROX. BOXES to POINT ASSOCIATIONS --------------------------
+        # for each point we find its approximate instance id
+        cfg = self.cfg
+        # remove bounding boxes from walls / floor / ceiling
+        semantics = labels['per_instance_semantics']
+        scene_fg = s3dis.semantics_to_forground_mask (semantics, cfg)
+
+
+        # get bounding boxes
+        instance_ids = labels['unique_instances'][scene_fg] # Per instance / bb
+        semantic_ids = labels['per_instance_semantics'][scene_fg] # Per instance / bb
+        
+        centers = labels['per_instance_bb_centers'][scene_fg]
+
+        bounds = labels['per_instance_bb_bounds'][scene_fg] + 0.0001
+        min_corner = centers - bounds
+        max_corner = centers + bounds
+
+        # compute is_within for each BB
+        # put into matrix: bbs x points, do count with index along columns
+        bb_occupancy =  is_within_bb(scene['positions'], min_corner[:,None], max_corner[:,None])
+
+        activations_per_points = np.ones ((len (scene['positions'])), dtype=np.int32) * -1
+        num_BBs_per_point =  np.zeros ((len (scene['positions'])), dtype=np.int32)
+        for bb_idx, bb_mask in enumerate (bb_occupancy):
+            num_BBs_per_point [bb_mask] += 1
+            activations_per_points [bb_mask] = bb_idx
+        
+
+
+        # BACKGROUND WE USE INSTANCE ID -1
+        # UNKNOWN WE USE INSTANCE ID -2
+        # GT UNLABELED INSTANCE ID is 0 (in background)
+
+        # ---------------- PSEUDO INSTANCES FROM POINTS --------------------------
+        # get bb ID for each point, if point has single BB
+        inst_per_point = np.ones(len(scene['positions']), dtype=np.int) * -1
+        sem_per_point = np.ones(len(scene['positions']), dtype=np.int) * -1
+        
+        
+        in_one_bb_mask = num_BBs_per_point == 1
+        in_many_bb_mask = num_BBs_per_point > 1
+        
+        # Assign forground instances for points that are contained in a single BB
+        for bb_idx, bb_mask in enumerate (bb_occupancy):
+            inst_per_point [bb_mask & in_one_bb_mask] = instance_ids [bb_idx]
+            sem_per_point [bb_mask & in_one_bb_mask] = semantic_ids [bb_idx]
+        inst_per_point [in_many_bb_mask] = -2
+        sem_per_point [in_many_bb_mask] = -100
+
+        # ---------------- PSEUDO INSTANCES VIA SEGMENT POOLING --------------------------
+        # get bb ID for each point, if point lies on a segment which has a point within only a single BB
+        inst_per_point_pooled = np.ones(len(scene['positions']), dtype=np.int) * -1
+        sem_per_point_pooled = np.ones(len(scene['positions']), dtype=np.int) * -100
+        num_BBs_per_point_pooled = np.ones(len(scene['positions']), dtype=np.int) * 0
+        # "if any point of the segment is in no BB, then the whole segment is in no BB"
+        
+        inst_per_seg_pooled = np.ones(len(unique_segs), dtype=np.int) * -2
+        sem_per_seg_pooled = np.ones(len(unique_segs), dtype=np.int) * -100
+
+        for i, seg_id in enumerate(unique_segs):
+            seg_mask = seg_id == scene['segments']
+            num_BBs_per_point_pooled [seg_mask] = stats.mode (num_BBs_per_point[seg_mask], None) [0][0]
+        #------------------------------------------- Begin Background semantic assignment -----------------------------------------#
+        scene_bg = ~scene_fg # Per_instance
+        
+        # Instances of background are associated after forground instances (foreground take the priority)
+        instance_ids = labels['unique_instances'][scene_bg]
+        semantic_ids = labels['per_instance_semantics'][scene_bg]
+
+        bg_centers = labels['per_instance_bb_centers'][scene_bg]
+
+        bg_bounds = labels['per_instance_bb_bounds'][scene_bg] + 0.0001
+        min_corner = bg_centers - bg_bounds
+        max_corner = bg_centers + bg_bounds
+
+        # compute is_within for each BB
+        # put into matrix: bbs x points, do count with index along columns
+        bb_occupancy =  is_within_bb(scene['positions'], min_corner[:,None], max_corner[:,None])
+        activations_per_points = np.ones ((len (scene['positions'])), dtype=np.int32) * -1
+        bg_num_BBs_per_point =  np.zeros ((len (scene['positions'])), dtype=np.int32)
+        for bb_idx, bb_mask in enumerate (bb_occupancy):
+            bg_num_BBs_per_point [bb_mask] += 1
+            activations_per_points [bb_mask] = bb_idx
+        
+        in_one_bb_mask = bg_num_BBs_per_point == 1
+        in_many_bb_mask = bg_num_BBs_per_point > 1
+        undecided_mask = inst_per_point == -1
+        
+         # Assign background instances for points that are in single BB / no BB
+        for bb_idx, bb_mask in enumerate (bb_occupancy):
+            inst_per_point [bb_mask & in_one_bb_mask & undecided_mask] = instance_ids [bb_idx]
+            sem_per_point [bb_mask & in_one_bb_mask & undecided_mask] = semantic_ids [bb_idx]
+        inst_per_point [in_many_bb_mask & undecided_mask] = -2
+        sem_per_point [in_many_bb_mask & undecided_mask] = -100
+        inst_per_point [inst_per_point==-1] = -2
+        sem_per_point [sem_per_point==-1] = -100
+
+        pseudo_instances = inst_per_point 
+        pseudo_semantics = sem_per_point
+
+        #------------------------------------------- End Background semantic assignment -----------------------------------------#
+
+        if point_association:
+            return pseudo_instances, pseudo_semantics
+        else:
+
+            # ---------------- PSEUDO INSTANCES VIA SEGMENT POOLING --------------------------
+            for i, seg_id in enumerate(unique_segs):
+                seg_mask = seg_id == scene['segments']
+                ins_id = stats.mode (inst_per_point[seg_mask], None) [0][0]
+                sem_id = stats.mode (sem_per_point[seg_mask], None) [0][0]
+                inst_per_point_pooled [seg_mask] = ins_id
+                sem_per_point_pooled [seg_mask] =  sem_id
+                inst_per_seg_pooled [i] = ins_id
+                sem_per_seg_pooled [i] = sem_id
+            
+            # background and unlabeled are mapped to zero
+            pseudo_instances_pooled = inst_per_point_pooled 
+            pseudo_semantics_pooled = sem_per_point_pooled
+
+            return pseudo_instances_pooled, sem_per_point, inst_per_seg_pooled, sem_per_seg_pooled
+
+
+    def get_loader(self, shuffle=True, drop_last=True, batch_size=None):
+
+        if batch_size is None:
+            batch_size = self.cfg.batch_size
+
+        return torch.utils.data.DataLoader(
+                self, batch_size=batch_size, num_workers=self.cfg.num_workers, shuffle=shuffle, drop_last=drop_last,
+                worker_init_fn=self.worker_init_fn, collate_fn=collate_fn(self.cfg, self.mode))
+
+    def worker_init_fn(self, worker_id):
+        random_data = os.urandom(4)
+        base_seed = int.from_bytes(random_data, byteorder="big")
+        np.random.seed(base_seed + worker_id)
+        random.seed(base_seed + worker_id)
+        torch.random.manual_seed(base_seed + worker_id)
+
 class collate_fn:
     """Generates collate function for coords, feats, labels.
     """
@@ -683,4 +989,7 @@ class collate_fn:
         ret["gt_bb_offsets"] = torch.from_numpy(np.concatenate(ret["gt_bb_offsets"], 0)).float()
         ret['gt_semantics'] = torch.from_numpy(np.concatenate(ret['gt_semantics'], 0)).long()
         ret['fg_instances'] = torch.from_numpy(np.concatenate(ret['fg_instances'], 0)).bool()
+
+        if 'gt_per_vox_semantics' in ret.keys (): # S3DIS supervises semantic prediction for each voxel
+            ret['gt_per_vox_semantics'] = torch.from_numpy(np.concatenate(ret['gt_per_vox_semantics'], 0)).long()
         return ret

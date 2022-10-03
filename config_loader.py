@@ -33,6 +33,22 @@ def config_parser():
     parser.add_argument("--subsample_rate", type=int, default=10,
                         help="subsample rate of the point cloud, arscenes are 10 times larger than scannet")
 
+    # --------------------- S3DIS SETTING ----------------------------------------------------------------
+    parser.add_argument ('--s3dis_split_fold', default=5, type=int,
+                        help='which data fold will be used for validation/testing.')
+    parser.add_argument ('--point_sampling_rate', default=None, type=float, 
+                        help='Sub-sampling point rate for s3dis dataset (the data is very dense which require heavy memory consumption)')
+    parser.add_argument ('--superpoint_algo', default='learned_superpoint', type=str, choices=['learned_superpoint'],
+                        help='Choose the oversegmentations to process. Choices are: \
+                        learned_superpoint - Use the superpoint from the learned superpoint graph work - (https://github.com/loicland/superpoint_graph - LandrieuCVPR18)')
+    parser.add_argument ('--ignore_wall_ceiling_floor', default=False, action='store_true',
+                        help='Do not calculate loss of bounds, offsets and confidence score for wall, floor and ceiling instances')
+    parser.add_argument ('--ignore_ceiling_floor', default=False, action='store_true',
+                        help='Do not calculate loss of bounds, offsets and confidence score for floor and ceiling instances. (NOTE: wall is still predicted)')
+    parser.add_argument ('--full_resolution', default=False, action='store_true',
+                        help='Upsample to the point cloud when writing/evaluating the final prediction')
+
+
 
     # --------------------- BB SUPERVISION ----------------------------------------------------------------
     parser.add_argument("--bb_supervision", default=False, action="store_true",
@@ -158,6 +174,8 @@ def config_parser():
     parser.add_argument("--loss_on_all_instances", default=False, action='store_true',
                         help='Overwrites loss_on_fg_instances. Apply loss for bounding box bounds and offsets on all '
                              'instances, including BG.')
+    parser.add_argument("--num_eval_batches", type=int, default=5,
+                        help='Number of validation batches processed for valid loss evaluation ')
 
     # learning rate scheduler
     parser.add_argument("--use_lr_scheduler", default=False, action='store_true',
@@ -214,8 +232,8 @@ def config_parser():
                         help="Boolean, indicating if we want to do prediction per segment instead of per voxel.")
 
     parser.add_argument("--network_heads", default=None, type=str, nargs="+",
-                        choices=["mlp_offsets", "mlp_bounds", "mlp_bb_scores", "mlp_semantics", "mlp_center_scores"],
-                        help="Lists of network heads. Possible values: mlp_offsets, mlp_bounds, mlp_bb_scores"
+                        choices=["mlp_offsets", "mlp_bounds", "mlp_bb_scores", "mlp_semantics", "mlp_center_scores", "mlp_per_vox_semantics"],
+                        help="Lists of network heads. Possible values: mlp_offsets, mlp_bounds, mlp_bb_scores, mlp_per_vox_semantics"
                              " mlp_semantics")
     parser.add_argument("--mlp_bounds_relu", default=False, action="store_true",
                         help="Boolean, indicating if we want to use relu activation for mlp_bounds")
@@ -241,6 +259,9 @@ def config_parser():
                         help="Weight applied to the center score loss.")
     parser.add_argument("--loss_weight_bb_iou", type=float, default=None,
                         help="Weight applied to the bb iou loss.")
+    parser.add_argument("--loss_weight_per_vox_semantics", type=float, default=1,
+                        help="Weight applied to the loss on per voxel semantics prediction")
+
 
     parser.add_argument("--mlp_bb_scores_start_epoch", default=0, type=int,
                         help="Epoch, when training of mlp_bb_scores is started.")
@@ -286,13 +307,14 @@ def get_config(args=None):
     cfg.mlp_bb_scores = "mlp_bb_scores"
     cfg.mlp_center_scores = "mlp_center_scores"
     cfg.mlp_semantics = "mlp_semantics"
+    cfg.mlp_per_vox_semantics = "mlp_per_vox_semantics"
     cfg.network_heads_options = [cfg.mlp_offsets, cfg.mlp_bounds, cfg.mlp_bb_scores,
-                                 cfg.mlp_semantics, cfg.mlp_center_scores]
+                                 cfg.mlp_semantics, cfg.mlp_center_scores, cfg.mlp_per_vox_semantics]
 
     cfg.full_model = False
     if (cfg.mlp_bounds in cfg.network_heads and
      cfg.mlp_offsets in cfg.network_heads and
-     cfg.mlp_semantics in cfg.network_heads and
+     ((cfg.mlp_semantics in cfg.network_heads) or (cfg.mlp_per_vox_semantics in cfg.network_heads)) and
      cfg.mlp_bb_scores in cfg.network_heads):
         cfg.full_model = True
     else:
@@ -309,7 +331,7 @@ def get_config(args=None):
     cfg.checkpoint_path = cfg.exp_path + 'checkpoints/'.format(cfg.exp_name)
 
     if cfg.mlp_center_scores in cfg.network_heads:
-        assert cfg.mlp_offsetsßßßß
+        assert cfg.mlp_offsets
 
     assert set(cfg.network_heads) <= set(cfg.network_heads_options)
 

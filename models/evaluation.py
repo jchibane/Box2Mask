@@ -1,10 +1,11 @@
 import sys
 sys.path.append('.')
 
-from models.dataloader import ScanNet, ARKitScenes
+from models.dataloader import ScanNet, ARKitScenes, S3DIS
 import torch
 import dataprocessing.scannet as scannet
 import dataprocessing.arkitscenes as arkitscenes
+import dataprocessing.s3dis as s3dis
 import os
 from glob import glob
 import numpy as np
@@ -20,6 +21,7 @@ from utils.util import colors, to_color, get_bbs_lines
 import scipy.stats as stats
 import pyviz3d.visualizer as viz
 import uuid
+import utils.s3dis_util as s3dis_util
 from matplotlib import cm
 from utils.util import *
 from models.iou_nms import *
@@ -50,7 +52,11 @@ class Evaluater(object):
             self.semantic_id2idx = arkitscenes.ARKITSCENES_SEMANTIC_ID2IDX
             self.instance_id2idx = arkitscenes.ARKITSCENES_INSTANCE_ID2IDX
             self.is_foreground = arkitscenes.is_foreground
-
+        elif self.cfg.dataset_name == 's3dis':
+            self.semantic_valid_class_ids = s3dis.S3DIS_SEMANTIC_VALID_CLASS_IDS
+            self.semantic_id2idx = s3dis.S3DIS_SEMANTIC_ID2IDX
+            self.instance_id2idx = s3dis.S3DIS_INSTANCE_ID2IDX
+            self.is_foreground = s3dis.is_foreground
         
         os.makedirs(self.results_path, exist_ok=True)
 
@@ -94,6 +100,9 @@ class Evaluater(object):
     # do prediction and evaluation on all scenes of a dataset
     def eval(self, val_dataset, write_to_tb = False):
         print('Get predictions on full dataset:')
+        if self.cfg.dataset_name == 's3dis':
+            return self.s3dis_eval (val_dataset)
+
         if os.path.exists(self.get_predictions_path()):
             print('Loading dumped predictions...')
             with open(self.get_predictions_path(), "rb") as input_file:
@@ -111,6 +120,126 @@ class Evaluater(object):
             return self.scannet_eval (results, write_to_tb)
         if self.cfg.dataset_name == 'arkitscenes':
             return self.arkitscenes_eval (results, batches, predictions)
+        
+    def s3dis_eval (self, val_dataset, viz_path=None, visualize_only=False):
+        from utils.s3dis_util import clustering_for_background, assign_semantics_to_proposals, visualize_prediction
+
+        model = self.model
+        cfg = self.cfg
+        scene_names = s3dis.get_scene_names ('val', cfg)
+        
+        val_iter = val_dataset.get_loader(shuffle=False, drop_last=False, batch_size=1)
+        cluster_th, score_th, mask_bin_th, mask_nms_th  = cfg.eval_ths
+        folds = [cfg.s3dis_split_fold]
+        gt_labels = []
+        pred_labels = []
+
+        for iter, batch in enumerate (val_iter):
+        
+            prediction = model.get_prediction(batch, with_grad = False, to_cpu = True, min_size = True)
+            scene = batch ['scene'][0]
+            labels = batch ['labels'][0]
+
+            scene_name = scene ["name"]
+            print ("processing scene", iter, "-", scene_name)
+            vox_pred_semantics = np.argmax (prediction ['mlp_per_vox_semantics'].cpu ().numpy (), 1)
+
+            scene = batch ['scene'][0]
+            labels = batch ['labels'][0]
+            scene_name = scene ['name']
+
+            if cfg.full_resolution:
+                cfg.point_sampling_rate = None
+                scene_full, labels_full = s3dis.process_scene (scene_name, 'val', cfg)
+                sparse2dense = get_sparse2dense (scene_full, scene, cfg)
+
+            results = self.model.pred2mask(batch, prediction, mode='eval')
+            
+            gt_label = {}
+            gt_label ["semantics"] = labels ["semantics"]
+            gt_label ["instances"] = labels ["instances"]
+            pred_label = {}
+
+            vox_id_per_point = batch["vox2point"][0]
+            pred_semantics = vox_pred_semantics [vox_id_per_point]
+
+            pred_label ["semantics"] = pred_semantics
+            prediction ["vox_semantics"] = vox_pred_semantics
+            prediction ["pred_semantics"] = pred_label ["semantics"]
+
+            # Clustering wall / floor / ceiling differently
+            background_pred_instances = clustering_for_background (pred_semantics, scene["positions"], scene["normals"])
+            # Using majoring vote to assign semantic prediction for each point
+            proposal_semantics = assign_semantics_to_proposals (pred_semantics, results [scene_name]['mask'])
+            prediction ["pred_prop_semantics"] = proposal_semantics
+
+            # Initialize instance predictions to be all -1 (ignored in the evaluation code)
+            pred_instances = np.zeros_like (labels ["instances"]) - 1
+            for idx, prop_mask in enumerate (results [scene_name]['mask']):
+                unlabeled_mask = pred_instances < 0
+                original_point_count = np.count_nonzero (prop_mask > 0)
+                if proposal_semantics [idx] < 3:
+                    continue
+                # Exclude the points that were assigned a label earlier
+                prop_mask = (prop_mask > 0) & unlabeled_mask
+                # Not updating segments that have only 0.6 points of its original size or fewer
+                filtered_point_count = np.count_nonzero (prop_mask)
+                if (1.0 * filtered_point_count / original_point_count < 0.6):
+                    continue
+                # Ignore proposals that have less than 200 points
+                if filtered_point_count < 200:
+                    continue
+                pred_instances [(prop_mask > 0)] = idx + 1
+                prediction ["pred_semantics"][(prop_mask > 0)] = proposal_semantics [idx]
+
+            prediction ["pred_semantics"] = pred_label ["semantics"]
+            # Assign background instances to the final prediction with highest confidence score (always overwrite existing assignment)
+            max_id_wo_bg = np.max (pred_instances)
+            background_pred_instances [background_pred_instances > 0] += max_id_wo_bg
+            pred_instances [background_pred_instances > 0] = background_pred_instances [background_pred_instances > 0]
+            for class_id in range (13):
+                class_mask = pred_label ["semantics"] == class_id
+                prop_ids, prop_cnts = np.unique (pred_instances[class_mask], return_counts=True)
+                id_small_mask = prop_cnts < 200
+                small_prop_ids = prop_ids [id_small_mask]
+                small_mask = np.isin (pred_instances[class_mask], small_prop_ids)
+
+                tmp = pred_instances[class_mask]
+                tmp [small_mask] = -1
+
+                pred_instances[class_mask] = tmp
+
+            pred_label ["instances"] = pred_instances
+            if not cfg.full_resolution:
+                gt_labels.append (gt_label)
+                pred_labels.append (pred_label)
+            else:
+                gt_label ["semantics"] = labels_full ["semantics"]
+                gt_label ["instances"] = labels_full ["instances"]
+                pred_label ["semantics"] = pred_label ["semantics"][sparse2dense]
+                pred_label ["instances"] = pred_label ["instances"][sparse2dense]
+                gt_labels.append (gt_label)
+                pred_labels.append (pred_label)
+
+            if viz_path is not None:
+                viz_path = os.path.join (viz_path, scene_name)
+                os.makedirs (viz_path, exist_ok=True)
+                visualize_prediction (self.cfg, scene_name, scene, labels, pred_label, viz_path)
+
+        if not visualize_only:
+            # Calculate precision and recall
+            mPrecicision, mRecall, precisions, recalls = s3dis_util.s3dis_eval (pred_labels, gt_labels)
+            print ("mean Precision", mPrecicision)
+            print ("mean Recall", mRecall)
+            print ("Precision of each class")
+            print ("\tClass name \t\t Precision")
+            for name, prec in zip (s3dis.ID2NAME, precisions):
+                print(f'{name:>15}: \t {prec:.3f}')
+            print ("recall of each class")
+            print ("\tClass name \t\t Recall")
+            for name, rec in zip (s3dis.ID2NAME, recalls):
+                print(f'{name:>15}: \t {rec:.3f}')
+                
     
     # do prediction and evaluation on all scenes of a dataset
     def arkitscenes_eval (self, results, batches, predictions, oriented_boxes=True, iou_t=0.5, visualize=False):
@@ -121,8 +250,6 @@ class Evaluater(object):
         for i in range(len(batches)):
             batch = batches[i]
             result = results[list(results.keys())[i]]
-            if visualize:
-                self.visualize_scene(batch, result)
 
             scene = batch['scene'][0]
             labels = batch['labels'][0]
@@ -163,16 +290,8 @@ class Evaluater(object):
                     convex_hull_3d_top = np.concatenate(
                         [convex_hull_vertices_2d, np.ones([convex_hull_vertices_2d.shape[0], 1]) * points_z_max], axis=1)
                     convex_hull_3d = np.concatenate([convex_hull_3d_bottom, convex_hull_3d_top], axis=0)
-                    #bounding_box = box_3d_from_hull_3d(convex_hull_3d)
                     bounding_box = convex_hull_3d
 
-                    if False and visualize:
-                        v = viz.Visualizer()
-                        normals = scene['normals'][result['mask'][i]]
-                        colors = scene['colors'][result['mask'][i]] * 255
-                        v.add_points(f'points_orig_{i}', positions, colors=colors, normals=normals, point_size=10, visible=True)
-                        v.add_polyline(f'rot', positions=bounding_box)
-                        v.save(os.path.join('viz_debug2', scene['name']))
                 else:
                     positions_min, positions_max = np.min(positions, axis=0), np.max(positions, axis=0)
                     bounding_box_center = (positions_min + positions_max) / 2.0
@@ -182,23 +301,6 @@ class Evaluater(object):
 
             pred_all[scene['name']] = predictions_list
             gt_all[scene['name']] = groundtruth_list
-
-            if False and visualize:
-                v = viz.Visualizer()
-                v.add_points('points', scene['positions'], scene['colors'] * 255, scene['normals'], point_size=10)
-                if oriented_boxes:
-                    for i, box in enumerate(pred_all[scene['name']]):
-                        v.add_polyline(f'pr;box{i}_{box[0]}', positions=box[1], edge_width=0.01, color=np.array([255, 0, 0]))
-                    for i, box in enumerate(gt_all[scene['name']]):
-                        v.add_polyline(f'gt;box{i}_{box[0]}', positions=box[1], edge_width=0.01, color=np.array([0, 155, 0]))
-                else:
-                    for i, box in enumerate(pred_all[scene['name']]):
-                        v.add_bounding_box(f'pr;box{i}_{box[0]}', position=box[1][0:3], size=box[1][3:6],
-                                           color=np.array([255, 0, 0]))
-                    for i, box in enumerate(gt_all[scene['name']]):
-                        v.add_bounding_box(f'gt;box{i}_{box[0]}', position=box[1][0:3], size=box[1][3:6],
-                                           color=np.array([0, 255, 0]))
-                v.save(os.path.join('viz_debug', scene['name']))
 
         if oriented_boxes:
             iou_func = evaluate_detections.get_iou_obb
@@ -412,6 +514,11 @@ class Evaluater(object):
             v.save(os.path.join(out_path, "pyviz3d"))
 
             print('Done')
+    
+    def produce_visualizations_s3dis (self, val_dataset):
+        vis_folder = self.results_path + f"/viz/"
+        self.s3dis_eval (val_dataset, viz_path=vis_folder, visualize_only=True)
+        
 
     def produce_visualizations_scannet (self, val_dataset):
         print('Get predictions:')
@@ -575,7 +682,16 @@ if __name__ == '__main__':
         semantic_id2idx = arkitscenes.ARKITSCENES_SEMANTIC_ID2IDX
         instance_id2idx = arkitscenes.ARKITSCENES_INSTANCE_ID2IDX
         is_foreground = arkitscenes.is_foreground
-
+    elif cfg.dataset_name == 's3dis':
+        import dataprocessing.s3dis as s3dis
+        if not cfg.predict_specific_scene:
+            val_dataset = S3DIS('val', cfg, do_augmentations=False)
+        else:
+            val_dataset = S3DIS('predict_specific_scene', cfg, do_augmentations=False)
+        semantic_valid_class_ids_torch = s3dis.S3DIS_SEMANTIC_VALID_CLASS_IDS_torch
+        semantic_id2idx = s3dis.S3DIS_SEMANTIC_ID2IDX
+        instance_id2idx = s3dis.S3DIS_INSTANCE_ID2IDX
+        is_foreground = s3dis.is_foreground
 
     model = model.Model(cfg, semantic_valid_class_ids_torch, semantic_id2idx, instance_id2idx, is_foreground, device=cfg.eval_device)
 
@@ -599,6 +715,8 @@ if __name__ == '__main__':
             predictor.produce_visualizations_scannet (val_dataset)
         elif cfg.dataset_name == 'arkitscenes':
             predictor.produce_visualizations_arkitscenes (val_dataset)
+        elif cfg.dataset_name == 's3dis':
+            predictor.produce_visualizations_s3dis (val_dataset)
 
     # Get the prediction in submission format for validation set
     if cfg.submission_write_out:

@@ -1,0 +1,36 @@
+# experiment
+exp_name = cfg_name
+data_dir = ./data/s3dis/
+
+# input settings
+use_normals_input
+
+# model
+do_segment_pooling
+network_heads = [mlp_offsets, mlp_bounds, mlp_bb_scores, mlp_per_vox_semantics]
+
+# eval
+eval_ths = [0.5, 0.03, 0.3, 0.6]
+
+#training settings
+batch_size = 4
+num_workers = 8
+lr = 0.001
+loss_weight_bb_bounds = 0.5
+loss_weight_bb_scores = 3
+mlp_bb_scores_start_epoch = 100
+
+# augmentations
+augmentation
+scaling_aug= [1.0, 0.8, 1.2]
+rotation_90_aug
+
+# dataset settings
+dataset_name s3dis
+point_sampling_rate 0.25
+ignore_wall_ceiling_floor
+superpoint_algo learned_superpoint
+s3dis_split_fold 5
+
+# BB supervision
+bb_supervision
