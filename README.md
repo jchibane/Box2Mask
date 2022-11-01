@@ -22,16 +22,41 @@ Follow the instructions [here](docs/installation.md) to setup the environment
 
 ## Data Setup
 
-**Scannet**: Download the [Scannet](http://www.scan-net.org/) dataset and uncompress the data to  `data/scannet/`.
+**Scannet**: Download the [Scannet](http://www.scan-net.org/) dataset here. 
+Download the preprocessed ground truth data ([gt_instance_data_txt.tar.gz](https://datasets.d2.mpi-inf.mpg.de/box2mask/gt_instance_data_txt.tar.gz)) and extract it to `data/scannet/`
 Each scene is stored with the name of format `scene%04d_%02d` (see [Scannet](https://raw.githubusercontent.com/ScanNet/ScanNet/master/README.md)).
 The data should be organized as follows for our project. 
 ```
-box2mask/data/scannet/3dod/
-└── scans/
-    ├── scene0383_02/           # each scene has the name in format `scene%04d_%02d`
+box2mask/data/scannet/
+└── scans/                        # contains 1513 train/valid scences
+    ├── scene0383_02/             # each scene has the name in format `scene%04d_%02d`
+        ├── scene0383_02_vh_clean.ply
+        ├── scene0383_02.sens
+        ├── scene0383_02_vh_clean_2.0.010000.segs.json
+        ├── scene0383_02.aggregation.json, _vh_clean.aggregation.json
+        ├── scene0383_02_vh_clean_2.0.010000.segs.json, _vh_clean.segs.json
+        ├── scene0383_02_vh_clean_2.labels.ply
+        ├── scene0383_02_2d-label.zip
+        ├── scene0383_02_2d-instance.zip
+        ├── scene0383_02_2d-label-filt.zip  
+        ├── scene0383_02_2d-instance-filt.zip
     ├── scene0515_02/
     ├── scene0643_00/
-└── data/scannet/scannetv2_official_split.npz # containing data splits
+    ...
+└── scans_test/                   # contains 100 test scenes
+    ├── scene0731_00/
+        ├── scene0731_00.sens
+        ├── scene0731_00.txt
+        ├── scene0731_00_vh_clean_2.ply
+        ├── scene0731_00_vh_clean.ply
+    ├── scene0739_00/
+    ├── scene0747_00/
+    ...
+└── scannetv2_official_split.npz  # contains data splits info
+└── gt_instance_data_txt/         # contains GT segmentations as txt files
+    ├── scene0383_02.txt
+    ├── scene0643_00.txt
+    ...
 ```
 
 **Arkit**: See [Arkitscenes instruction](docs/arkitscenes.md).
